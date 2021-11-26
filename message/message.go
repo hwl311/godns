@@ -75,11 +75,9 @@ func Parse(data []byte) *Message {
 	begin := 12
 
 	qs := make([]*Question, m.QDCOUNT)
-	log.Println(m.QDCOUNT)
 	for i := 0; i < m.QDCOUNT; i++ {
 		qs[i] = parseQuestion(data[begin:])
 		begin = begin + qs[i].Size()
-		log.Println("qs", i, qs[i].Name(), qs[i])
 	}
 	m.Question = qs
 
@@ -185,6 +183,7 @@ type Answer struct {
 	Class int
 	Ttl   int
 	raw   []byte
+	AType int // 1-Answer,2-Authority or 3-Additional
 }
 
 func (a *Answer) Print() {
@@ -215,7 +214,7 @@ func (a *Answer) ToBytes() []byte {
 }
 
 func NewAnswer(Type, Class, Ttl int, value string) *Answer {
-	a := &Answer{nil, nil, Type, Class, Ttl, nil}
+	a := &Answer{nil, nil, Type, Class, Ttl, nil, 1}
 	return a
 }
 
@@ -262,24 +261,62 @@ func parseAnswer(data []byte, raw []byte) (*Answer, int) {
 }
 
 type MsgBuilder struct {
-	msg *Message
+	msg   *Message
+	names map[string]int
 }
 
 func NewMsgBuilder() *MsgBuilder {
 	msg := &Message{}
-	return &MsgBuilder{msg}
+	names := make(map[string]int)
+	return &MsgBuilder{msg, names}
 }
 
 func NewResMsgBuilder(request *Message) *MsgBuilder {
-	return &MsgBuilder{request}
+	msg := &Message{}
+	msg.Id = request.Id
+	msg.QR = 1
+	msg.Opcode = request.Opcode
+	msg.AA = 0
+	msg.TC = 0
+	msg.RD = request.RD
+	msg.RCODE = 0
+	names := make(map[string]int)
+	mb := &MsgBuilder{msg, names}
+
+	//msg.Question = request.Question
+	for _, q := range request.Question {
+		mb.AddQuestion(q.Name(), q.QType, q.QClass)
+	}
+	return mb
 }
 
 func (mb *MsgBuilder) SetRecursion(ra bool) *MsgBuilder {
+	if ra {
+		mb.msg.RA = 1
+	} else {
+		mb.msg.RA = 0
+	}
 	return mb
 }
 
-func (mb *MsgBuilder) AddAnswer(name string, qtype int, qclass int, ttl int, value []byte) *MsgBuilder {
+func (mb *MsgBuilder) AddQuestion(name string, qtype int, qclass int) *MsgBuilder {
+	if mb.msg.Question == nil {
+		mb.msg.Question = make([]*Question, 0)
+	}
+	mb.msg.Question = append(mb.msg.Question, &Question{})
 	return mb
+}
+
+func (mb *MsgBuilder) AddAnswer(AnswerType int, name string, qtype int, qclass int, ttl int, value []byte) *MsgBuilder {
+	if mb.msg.Answer == nil {
+		mb.msg.Answer = make([]*Answer, 0)
+	}
+	mb.msg.Answer = append(mb.msg.Answer, &Answer{[]byte(name), value, qtype, qclass, ttl, nil, AnswerType})
+	return mb
+}
+
+func (mb *MsgBuilder) ToMessage() *Message {
+	return mb.msg
 }
 
 func (mb *MsgBuilder) ToBytes() []byte {

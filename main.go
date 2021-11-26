@@ -8,9 +8,24 @@ import (
 	"ruotian.vip/godns/server"
 )
 
-func main() {
-	server.New(nil).ListenAndServe("127.0.0.1", 53)
+type Backend struct{}
 
+func (be *Backend) Query(msg *message.Message, q *message.Question, mb *message.MsgBuilder) error {
+	log.Println("QUESTION", q.Name(), q.QType)
+	return nil
+}
+func (be *Backend) STATUS() int {
+	return 0
+} //服务器状态
+func (be *Backend) RecursionAvailable() bool {
+	return true
+} //服务器是否支持递归查询
+
+func main() {
+	server.New(&Backend{}).ListenAndServe("127.0.0.1", 54)
+
+}
+func Test() {
 	log.Println("dns started!")
 	parse([]byte("\xbbh\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03www\x07ruotian\x03vip\x00\x00\x01\x00\x01"))
 	log.Println("dns started!")

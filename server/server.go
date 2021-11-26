@@ -24,7 +24,9 @@ type Server struct {
 
 func (s *Server) Close() {
 	s.cancel()
-	s.conn.Close()
+	if s.conn != nil {
+		s.conn.Close()
+	}
 }
 
 func (s *Server) ListenAndServe(ip string, port int) error {
@@ -32,14 +34,16 @@ func (s *Server) ListenAndServe(ip string, port int) error {
 
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", ip, port))
 	if err != nil {
+		log.Println(err.Error())
 		return err
 	}
 	conn, err := net.ListenUDP("udp", addr)
-	s.conn = conn
 	if err != nil {
+		log.Println(err.Error())
 		return err
 	}
 	defer conn.Close()
+	s.conn = conn
 
 	buf := make([]byte, 4096)
 	for {
