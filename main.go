@@ -12,16 +12,21 @@ type Backend struct{}
 
 func (be *Backend) Query(msg *message.Message, q *message.Question, mb *message.MsgBuilder) error {
 	log.Println("QUESTION", q.Name(), q.QType)
+	mb.AddAnswer(string(q.QName), q.QType, q.QClass, 600, "8.8.8.8")
 	return nil
 }
 func (be *Backend) STATUS() int {
 	return 0
 } //服务器状态
-func (be *Backend) RecursionAvailable() bool {
-	return true
+func (be *Backend) RecursionAvailable() int {
+	return 1
 } //服务器是否支持递归查询
 
 func main() {
+	buf := make([]byte, 40)
+	len := message.NameToBytes("www.baidu.com", buf)
+	log.Println(buf[:len])
+	//Test()
 	server.New(&Backend{}).ListenAndServe("127.0.0.1", 54)
 
 }

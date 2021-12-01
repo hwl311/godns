@@ -1,6 +1,9 @@
 package message
 
-import "log"
+import (
+	"log"
+	"net"
+)
 
 const (
 	CLASS_IN int = 1 //the Internet
@@ -76,8 +79,9 @@ func Parse(data []byte) *Message {
 
 	qs := make([]*Question, m.QDCOUNT)
 	for i := 0; i < m.QDCOUNT; i++ {
-		qs[i] = parseQuestion(data[begin:])
-		begin = begin + qs[i].Size()
+		question, size := parseQuestion(data[begin:])
+		begin = begin + size
+		qs[i] = question
 	}
 	m.Question = qs
 
@@ -111,7 +115,7 @@ func Parse(data []byte) *Message {
 }
 
 func parseHeader(data []byte, m *Message) {
-	m.Id = int(data[0]) + (int(data[1]) << 8)
+	m.Id = (int(data[0]) << 8) + int(data[1])
 	m.QR = int((data[2] & 0x80) >> 7)
 	m.Opcode = int((data[2] & 0x78) >> 3)
 	m.AA = int((data[2] & 0x04) >> 2)
@@ -127,22 +131,17 @@ func parseHeader(data []byte, m *Message) {
 }
 
 type Question struct {
-	QName  []byte
+	QName  string
 	QType  int
 	QClass int
-	raw    []byte
 }
 
 func (q *Question) ToBytes() []byte {
-	return q.raw
-}
-
-func (q *Question) Size() int {
-	return len(q.QName) + 4
+	return nil
 }
 
 func (q *Question) Name() string {
-	return name(q.QName)
+	return q.QName
 }
 
 func name(data []byte) string {
@@ -157,10 +156,10 @@ func name(data []byte) string {
 		buf[pos] = '.'
 		pos = pos + n + 1
 	}
-	return string(buf[1:])
+	return string(buf[1:pos])
 }
 
-func parseQuestion(data []byte) *Question {
+func parseQuestion(data []byte) (*Question, int) {
 	q := &Question{}
 	pos := 0
 	for {
@@ -169,37 +168,43 @@ func parseQuestion(data []byte) *Question {
 		}
 		pos = pos + int(data[pos]) + 1
 	}
-	q.QName = data[:pos+1]
+	q.QName = name(data[:pos+1])
 	q.QType = (int(data[pos+1]) << 8) + int(data[pos+2])
 	q.QClass = (int(data[pos+3]) << 8) + int(data[pos+4])
-	q.raw = data[:pos+5]
-	return q
+
+	return q, pos + 5
 }
 
 type Answer struct {
-	Name  []byte
-	Data  []byte
+	Name  string
+	Data  string
 	Type  int
 	Class int
 	Ttl   int
-	raw   []byte
-	AType int // 1-Answer,2-Authority or 3-Additional
+}
+
+type Value interface {
+	QType() int
+	QName() string
+	Value() string
+	Data() []byte
+	Format() string
 }
 
 func (a *Answer) Print() {
 	log.Println("--------------------")
-	log.Println("name", name(a.Name))
+	log.Println("name", a.Name)
 	switch a.Type {
 	case QTYPE_A:
 		log.Println("A", a.Data)
 	case QTYPE_AAAA:
 		log.Println("AAAA", a.Data)
 	case QTYPE_CNAME:
-		log.Println("CNAME", name(a.Data))
+		log.Println("CNAME", a.Data)
 	case QTYPE_NS:
-		log.Println("NS", name(a.Data))
+		log.Println("NS", a.Data)
 	case QTYPE_TXT:
-		log.Println("TXT", string(a.Data))
+		log.Println("TXT", a.Data)
 	default:
 		log.Println("raw", a.Type, a.Data)
 
@@ -207,19 +212,18 @@ func (a *Answer) Print() {
 }
 
 func (a *Answer) ToBytes() []byte {
-	if a.raw != nil {
-		return a.raw
-	}
 	return nil
 }
 
 func NewAnswer(Type, Class, Ttl int, value string) *Answer {
-	a := &Answer{nil, nil, Type, Class, Ttl, nil, 1}
+	a := &Answer{"", "", Type, Class, Ttl}
 	return a
 }
 
 func parseAnswer(data []byte, raw []byte) (*Answer, int) {
 	a := &Answer{}
+	len := 0
+	var value []byte
 	if (data[0] & 0xc0) == 0xc0 {
 		pos := (int(data[0]) & 0x3f) + int(data[1])
 		end := 0
@@ -229,15 +233,15 @@ func parseAnswer(data []byte, raw []byte) (*Answer, int) {
 			}
 			end = end + 1
 		}
-		a.Name = raw[pos : pos+end+1]
+		a.Name = name(raw[pos : pos+end+1])
 		a.Type = (int(data[2]) << 8) + int(data[3])
 		a.Class = (int(data[4]) << 8) + int(data[5])
 		a.Ttl = (int(data[6]) << 24) + (int(data[7]) << 16) + (int(data[8]) << 8) + int(data[9])
 		size := (int(data[10]) << 8) + int(data[11])
-		a.Data = data[12 : 12+size]
-		a.raw = data[:12+size]
+		value = data[12 : 12+size]
+		//a.raw = data[:12+size]
 
-		return a, 12 + size
+		len = 12 + size
 
 	} else {
 		pos := 0
@@ -247,17 +251,31 @@ func parseAnswer(data []byte, raw []byte) (*Answer, int) {
 			}
 			pos = pos + 1
 		}
-		a.Name = data[:pos+1]
+		log.Println("parse", data, data[:pos+1])
+		a.Name = name(data[:pos+1])
 
 		a.Type = (int(data[pos+1]) << 8) + int(data[pos+2])
 		a.Class = (int(data[pos+3]) << 8) + int(data[pos+4])
 		a.Ttl = (int(data[pos+5]) << 24) + (int(data[pos+6]) << 16) + (int(data[pos+7]) << 8) + int(data[pos+8])
 		size := (int(data[pos+9]) << 8) + int(data[pos+10])
-		a.Data = data[pos+11 : pos+11+size]
-		a.raw = data[:pos+11+size]
+		value = data[pos+11 : pos+11+size]
+		//a.raw = data[:pos+11+size]
 
-		return a, pos + size
+		len = pos + size
 	}
+
+	switch a.Type {
+	case QTYPE_A, QTYPE_AAAA:
+		a.Data = net.IP(value).String()
+	case QTYPE_CNAME, QTYPE_NS:
+		a.Data = name(value)
+	default:
+		a.Data = string(value)
+		//log.Println("raw", a.Type, a.Data)
+
+	}
+
+	return a, len
 }
 
 type MsgBuilder struct {
@@ -290,28 +308,48 @@ func NewResMsgBuilder(request *Message) *MsgBuilder {
 	return mb
 }
 
-func (mb *MsgBuilder) SetRecursion(ra bool) *MsgBuilder {
-	if ra {
-		mb.msg.RA = 1
-	} else {
-		mb.msg.RA = 0
-	}
+func (mb *MsgBuilder) SetRecursion(ra int) *MsgBuilder {
+	mb.msg.RA = ra
 	return mb
 }
 
 func (mb *MsgBuilder) AddQuestion(name string, qtype int, qclass int) *MsgBuilder {
 	if mb.msg.Question == nil {
 		mb.msg.Question = make([]*Question, 0)
+		mb.msg.QDCOUNT = 0
 	}
-	mb.msg.Question = append(mb.msg.Question, &Question{})
+	mb.msg.Question = append(mb.msg.Question, &Question{name, qtype, qclass})
+	mb.msg.QDCOUNT += 1
 	return mb
 }
 
-func (mb *MsgBuilder) AddAnswer(AnswerType int, name string, qtype int, qclass int, ttl int, value []byte) *MsgBuilder {
+func (mb *MsgBuilder) AddAnswer(name string, qtype int, qclass int, ttl int, value string) *MsgBuilder {
 	if mb.msg.Answer == nil {
 		mb.msg.Answer = make([]*Answer, 0)
+		mb.msg.ANCOUNT = 0
 	}
-	mb.msg.Answer = append(mb.msg.Answer, &Answer{[]byte(name), value, qtype, qclass, ttl, nil, AnswerType})
+	mb.msg.Answer = append(mb.msg.Answer, &Answer{name, value, qtype, qclass, ttl})
+	mb.msg.ANCOUNT += 1
+	return mb
+}
+
+func (mb *MsgBuilder) AddAuthority(name string, qtype int, qclass int, ttl int, value string) *MsgBuilder {
+	if mb.msg.Authority == nil {
+		mb.msg.Authority = make([]*Answer, 0)
+		mb.msg.NSCOUNT = 0
+	}
+	mb.msg.Authority = append(mb.msg.Authority, &Answer{name, value, qtype, qclass, ttl})
+	mb.msg.NSCOUNT += 1
+	return mb
+}
+
+func (mb *MsgBuilder) AddAdditional(name string, qtype int, qclass int, ttl int, value string) *MsgBuilder {
+	if mb.msg.Additional == nil {
+		mb.msg.Additional = make([]*Answer, 0)
+		mb.msg.ARCOUNT = 0
+	}
+	mb.msg.Additional = append(mb.msg.Additional, &Answer{name, value, qtype, qclass, ttl})
+	mb.msg.ARCOUNT += 1
 	return mb
 }
 
@@ -320,7 +358,117 @@ func (mb *MsgBuilder) ToMessage() *Message {
 }
 
 func (mb *MsgBuilder) ToBytes() []byte {
-	return nil
+	buf := make([]byte, 4096)
+	msg := mb.msg
+	buf[0] = byte((msg.Id >> 8) & 0xff)
+	buf[1] = byte(msg.Id & 0xff)
+	buf[2] = byte((msg.QR << 7) | (msg.Opcode << 3) | (msg.AA << 2) | (msg.TC << 1) | (msg.RD))
+	buf[3] = byte((msg.RA << 7) | (msg.Z << 4) | (msg.RCODE))
+
+	buf[4] = byte((msg.QDCOUNT >> 8) & 0xff)
+	buf[5] = byte(msg.QDCOUNT & 0xff)
+
+	buf[6] = byte((msg.ANCOUNT >> 8) & 0xff)
+	buf[7] = byte(msg.ANCOUNT & 0xff)
+
+	buf[8] = byte((msg.NSCOUNT >> 8) & 0xff)
+	buf[9] = byte(msg.NSCOUNT & 0xff)
+
+	buf[10] = byte((msg.ARCOUNT >> 8) & 0xff)
+	buf[11] = byte(msg.ARCOUNT & 0xff)
+
+	pos := 12
+	log.Println("0ToBytes", buf[:pos])
+	//question
+	for _, q := range msg.Question {
+		len := NameToBytes(q.QName, buf[pos:])
+		pos = pos + len
+		log.Println(q.QName, len)
+		buf[pos] = byte((q.QType >> 8) & 0xff)
+		buf[pos+1] = byte(q.QType & 0xff)
+		buf[pos+2] = byte((q.QClass >> 8) & 0xff)
+		buf[pos+3] = byte(q.QClass & 0xff)
+		pos = pos + 4
+		log.Println("1ToBytes", buf[:pos])
+	}
+
+	//answer
+	for _, a := range msg.Answer {
+		pos = pos + mb.answerToBytes(a, buf[pos:])
+		log.Println("2ToBytes", buf[:pos])
+	}
+
+	//authority
+	for _, a := range msg.Authority {
+		pos = pos + mb.answerToBytes(a, buf[pos:])
+		log.Println("3ToBytes", buf[:pos])
+	}
+
+	//Additional
+	for _, a := range msg.Additional {
+		pos = pos + mb.answerToBytes(a, buf[pos:])
+		log.Println("4ToBytes", buf[:pos])
+	}
+	return buf[:pos]
+}
+
+func (mb *MsgBuilder) answerToBytes(a *Answer, buf []byte) int {
+	pos := 0
+	len := NameToBytes(a.Name, buf[pos:])
+	pos = pos + len
+	//type
+	buf[pos] = byte((a.Type >> 8) & 0xff)
+	buf[pos+1] = byte(a.Type & 0xff)
+	pos = pos + 2
+
+	//class
+	buf[pos] = byte((a.Class >> 8) & 0xff)
+	buf[pos+1] = byte(a.Class & 0xff)
+	pos = pos + 2
+
+	//ttl
+	buf[pos] = byte((a.Ttl >> 24) & 0xff)
+	buf[pos+1] = byte((a.Ttl >> 16) & 0xff)
+	buf[pos+2] = byte((a.Ttl >> 8) & 0xff)
+	buf[pos+3] = byte(a.Ttl & 0xff)
+	pos = pos + 4
+
+	//value
+	switch a.Type {
+	case QTYPE_A:
+		ipaddr, _ := net.ResolveIPAddr("ip", a.Data)
+		len = copy(buf[pos+2:], []byte(ipaddr.IP.To4()))
+	case QTYPE_AAAA:
+		ipaddr, _ := net.ResolveIPAddr("ip", a.Data)
+		len = copy(buf[pos+2:], []byte(ipaddr.IP.To16()))
+	case QTYPE_CNAME, QTYPE_NS:
+		len = NameToBytes(a.Data, buf[pos+2:])
+	default:
+		len = copy(buf[pos+2:], []byte(a.Data))
+	}
+
+	//value size
+	log.Println("value size", len, byte((len>>8)&0xff), byte(len&0xff))
+	buf[pos] = byte((len >> 8) & 0xff)
+	buf[pos+1] = byte(len & 0xff)
+	return pos + len + 2
+}
+
+func NameToBytes(name string, buf []byte) int {
+	pos := 0
+	len := 0
+	for _, c := range name {
+		if c == '.' {
+			buf[pos] = byte(len & 0xff)
+			pos = pos + len + 1
+			len = 0
+		} else {
+			len = len + 1
+			buf[pos+len] = byte(c & 0xff)
+		}
+	}
+	buf[pos] = byte(len & 0xff)
+	return pos + len + 2
 }
 
 func (mb *MsgBuilder) ToError(code int) []byte {

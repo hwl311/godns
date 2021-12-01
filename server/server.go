@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -12,7 +13,7 @@ import (
 type Backend interface {
 	Query(msg *message.Message, q *message.Question, mb *message.MsgBuilder) error //
 	STATUS() int                                                                   //服务器状态
-	RecursionAvailable() bool                                                      //服务器是否支持递归查询
+	RecursionAvailable() int                                                       //服务器是否支持递归查询
 }
 
 type Server struct {
@@ -57,7 +58,12 @@ func (s *Server) ListenAndServe(ip string, port int) error {
 				continue
 			}
 			res := s.handle(buf[:len])
-			conn.WriteTo(res, caddr)
+			log.Println("WriteTo:", caddr, res)
+			resmsg := message.Parse(res)
+			j, _ := json.MarshalIndent(resmsg, "", "    ")
+			log.Println(string(j))
+			len, err = conn.WriteTo(res, caddr)
+			log.Println(len, err)
 		}
 	}
 }
@@ -69,6 +75,7 @@ func (s *Server) handle(request []byte) (response []byte) {
 		//TODO: error
 		return mb.ToError(message.CODE_FORMAT_ERROR)
 	}
+	mb.SetRecursion(s.Backend.RecursionAvailable())
 	for _, q := range req.Question {
 		err := s.Backend.Query(req, q, mb)
 		if err != nil {
